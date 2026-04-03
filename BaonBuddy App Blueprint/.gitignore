@@ -1,0 +1,14 @@
+node_modules/
+.env
+dist/
+coverage/
+.DS_Store
+*.log
+baonbuddy-backend/__pycache__/
+baonbuddy-backend/.pytest_cache/
+baonbuddy-backend/venv/
+baonbuddy-backend/.env
+app/dist/
+app/android/build/
+app/android/.gradle/
+app/android/local.properties
