@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { RefreshCw, WifiOff } from 'lucide-react';
 
@@ -7,9 +8,23 @@ interface SyncIndicatorProps {
 }
 
 export function SyncIndicator({ isSyncing, isOnline }: SyncIndicatorProps) {
+  const [showOfflineMode, setShowOfflineMode] = useState(!isOnline);
+
+  useEffect(() => {
+    if (!isOnline) {
+      setShowOfflineMode(true);
+      const timer = setTimeout(() => {
+        setShowOfflineMode(false);
+      }, 3000);
+      return () => clearTimeout(timer);
+    } else {
+      setShowOfflineMode(false);
+    }
+  }, [isOnline]);
+
   return (
     <AnimatePresence>
-      {!isOnline && (
+      {showOfflineMode && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}

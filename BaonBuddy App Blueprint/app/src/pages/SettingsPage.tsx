@@ -1,31 +1,33 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useApp } from '@/context/AppContext';
+
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import LocalDB from '@/services/localDB';
 import AIService from '@/services/aiSkills';
 import { Label } from '@/components/ui/label';
-import { Wallet, Save, Shield, Lock, Trash2, AlertTriangle, KeyRound, LogOut, HelpCircle, RefreshCw, Cpu, Check, ExternalLink, AlertCircle } from 'lucide-react';
+import { encryptApiKey, decryptApiKey } from '@/utils/crypto';
+import { Shield, Lock, Trash2, AlertTriangle, KeyRound, LogOut, HelpCircle, RefreshCw, Cpu, Check, ExternalLink, AlertCircle, PiggyBank, Save } from 'lucide-react';
 import { toast } from 'sonner';
+import { useApp } from '@/context/AppContext';
 
 interface SettingsPageProps {
   onNavigate: (page: string) => void;
 }
 
 export function SettingsPage({ onNavigate: _onNavigate }: SettingsPageProps) {
-  const { 
-    allowance, 
-    updateAllowance
-  } = useApp();
-  const [amount, setAmount] = useState(allowance.amount.toString());
-  const [period, setPeriod] = useState(allowance.period);
-
+  const { allowance, updateAllowance } = useApp();
+  
   const {
     changeMPIN, resetAllData, lock, logout,
     generateNewRecoveryCode, setupSecurityQuestion, hasSecurityQuestion
   } = useAuth();
+
+  // Budget state
+  const [budgetAmount, setBudgetAmount] = useState(allowance.amount.toString());
+  const [budgetPeriod, setBudgetPeriod] = useState(allowance.period);
+  const [isSavingBudget, setIsSavingBudget] = useState(false);
 
   // Change MPIN state
   const [showChangeMPIN, setShowChangeMPIN] = useState(false);
@@ -70,36 +72,27 @@ export function SettingsPage({ onNavigate: _onNavigate }: SettingsPageProps) {
   const [isTesting, setIsTesting] = useState(false);
 
   useEffect(() => {
-    LocalDB.meta.getGeminiKey().then(key => {
-      if (key) {
-        setGeminiKey(key);
-        setUsingCustomKey(true);
+    const loadKey = async () => {
+      const encryptedKey = await LocalDB.meta.getGeminiKey();
+      if (encryptedKey) {
+        try {
+          const pinHash = await LocalDB.auth.getMPINHash();
+          if (pinHash) {
+            const dec = await decryptApiKey(encryptedKey, pinHash);
+            setGeminiKey(dec);
+            setUsingCustomKey(true);
+          }
+        } catch (e) {
+          console.warn('Failed to decrypt API key');
+        }
       }
-    });
+    };
+    loadKey();
   }, []);
 
   // Logout state
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [showFinalLogout, setShowFinalLogout] = useState(false);
-
-  useEffect(() => {
-    setAmount(allowance.amount.toString());
-    setPeriod(allowance.period);
-  }, [allowance]);
-
-  const handleSave = async () => {
-    const numAmount = parseFloat(amount);
-    if (isNaN(numAmount) || numAmount < 0) {
-      toast.error('Please enter a valid amount');
-      return;
-    }
-    
-    await updateAllowance({
-      amount: numAmount,
-      period
-    });
-    toast.success('Settings saved successfully');
-  };
 
   const handleChangeMPIN = async () => {
     if (currentPin.length !== 4) {
@@ -183,11 +176,25 @@ export function SettingsPage({ onNavigate: _onNavigate }: SettingsPageProps) {
 
   const handleSaveAIKey = async () => {
     setIsSavingKey(true);
-    await LocalDB.meta.setGeminiKey(geminiKey.trim() || null);
+    const key = geminiKey.trim();
+    if (key) {
+      try {
+        const pinHash = await LocalDB.auth.getMPINHash();
+        if (pinHash) {
+          const enc = await encryptApiKey(key, pinHash);
+          await LocalDB.meta.setGeminiKey(enc);
+        }
+      } catch (e) {
+        toast.error('Failed to encrypt key');
+      }
+    } else {
+      await LocalDB.meta.setGeminiKey(null);
+    }
+    
     setIsSavingKey(false);
-    setUsingCustomKey(!!geminiKey.trim());
+    setUsingCustomKey(!!key);
 
-    if (geminiKey.trim()) {
+    if (key) {
       toast.success('Custom API Key saved! AI features are active.');
     } else {
       toast.success('Custom key cleared — using built-in key.');
@@ -236,7 +243,7 @@ export function SettingsPage({ onNavigate: _onNavigate }: SettingsPageProps) {
       <div className="px-4 pt-6 max-w-md mx-auto space-y-6">
         <h1 className="text-2xl font-bold text-foreground">Settings ⚙️</h1>
 
-        {/* Allowance Settings Card */}
+        {/* Budget Settings Card */}
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -244,45 +251,57 @@ export function SettingsPage({ onNavigate: _onNavigate }: SettingsPageProps) {
           className="bg-card rounded-3xl p-5 shadow-sm space-y-4 border border-border"
         >
           <div className="flex items-center gap-2">
-            <Wallet className="w-5 h-5 text-primary" />
-            <h2 className="font-bold text-foreground">Allowance Settings</h2>
+            <PiggyBank className="w-5 h-5 text-emerald-500" />
+            <h2 className="font-bold text-foreground">Budget Settings</h2>
           </div>
+          
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Budget Amount</Label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-medium">₱</span>
+                <Input
+                  type="number"
+                  value={budgetAmount}
+                  onChange={(e) => setBudgetAmount(e.target.value)}
+                  placeholder="0.00"
+                  className="pl-8 h-12 rounded-xl text-lg font-bold"
+                />
+              </div>
+            </div>
 
-          <div className="flex gap-2">
-            {(['daily', 'weekly', 'monthly'] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-bold capitalize transition-all ${
-                  period === p 
-                    ? 'bg-primary text-primary-foreground shadow-md' 
-                    : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
-                }`}
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Budget Period</Label>
+              <select 
+                value={budgetPeriod}
+                onChange={(e: any) => setBudgetPeriod(e.target.value)}
+                className="w-full bg-secondary rounded-xl px-4 py-2 text-sm font-medium text-foreground outline-none border border-border h-12"
               >
-                {p}
-              </button>
-            ))}
-          </div>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            </div>
 
-          <div>
-            <p className="text-sm text-muted-foreground font-semibold mb-1">Amount (₱)</p>
-            <input
-              type="number"
-              inputMode="decimal"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="w-full bg-secondary rounded-xl px-4 py-3 text-lg font-bold outline-none focus:ring-2 focus:ring-primary/30 text-foreground"
-              placeholder="0.00"
-            />
+            <Button
+              onClick={async () => {
+                const num = parseFloat(budgetAmount);
+                if (isNaN(num) || num <= 0) {
+                  toast.error('Please enter a valid budget amount');
+                  return;
+                }
+                setIsSavingBudget(true);
+                await updateAllowance({ amount: num, period: budgetPeriod as any });
+                setIsSavingBudget(false);
+                toast.success('Budget Settings updated successfully!');
+              }}
+              disabled={isSavingBudget}
+              className="w-full py-5 h-12 rounded-xl font-bold flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-white"
+            >
+              <Save className="w-4 h-4" />
+              {isSavingBudget ? 'Saving...' : 'Save Budget'}
+            </Button>
           </div>
-
-          <Button 
-            onClick={handleSave}
-            className="w-full py-6 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground font-bold flex items-center justify-center gap-2"
-          >
-            <Save className="w-4 h-4" />
-            Save Settings
-          </Button>
         </motion.div>
 
         {/* AI Configuration Card */}

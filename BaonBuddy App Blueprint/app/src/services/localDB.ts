@@ -57,11 +57,8 @@ export const LocalDB = {
     async set(wallet: Wallet): Promise<void> {
       await walletsStore.setItem(wallet.id.toString(), wallet);
     },
-    async setAll(wallets: Wallet[]): Promise<void> {
-      await walletsStore.clear();
-      for (const wallet of wallets) {
-        await walletsStore.setItem(wallet.id.toString(), wallet);
-      }
+    async setAll(_wallets: Wallet[]): Promise<void> {
+      throw new Error('setAll() is destructive and disabled. Restore this intentionally if needed.');
     },
     async remove(id: number): Promise<void> {
       await walletsStore.removeItem(id.toString());
@@ -94,11 +91,8 @@ export const LocalDB = {
     async set(transaction: Transaction): Promise<void> {
       await transactionsStore.setItem(transaction.id.toString(), transaction);
     },
-    async setAll(transactions: Transaction[]): Promise<void> {
-      await transactionsStore.clear();
-      for (const transaction of transactions) {
-        await transactionsStore.setItem(transaction.id.toString(), transaction);
-      }
+    async setAll(_transactions: Transaction[]): Promise<void> {
+      throw new Error('setAll() is destructive and disabled. Restore this intentionally if needed.');
     },
     async remove(id: number): Promise<void> {
       await transactionsStore.removeItem(id.toString());
@@ -129,11 +123,8 @@ export const LocalDB = {
     async set(category: Category): Promise<void> {
       await categoriesStore.setItem(category.id.toString(), category);
     },
-    async setAll(categories: Category[]): Promise<void> {
-      await categoriesStore.clear();
-      for (const category of categories) {
-        await categoriesStore.setItem(category.id.toString(), category);
-      }
+    async setAll(_categories: Category[]): Promise<void> {
+      throw new Error('setAll() is destructive and disabled. Restore this intentionally if needed.');
     },
     async remove(id: number): Promise<void> {
       await categoriesStore.removeItem(id.toString());
@@ -166,11 +157,8 @@ export const LocalDB = {
     async set(alert: Alert): Promise<void> {
       await alertsStore.setItem(alert.id.toString(), alert);
     },
-    async setAll(alerts: Alert[]): Promise<void> {
-      await alertsStore.clear();
-      for (const alert of alerts) {
-        await alertsStore.setItem(alert.id.toString(), alert);
-      }
+    async setAll(_alerts: Alert[]): Promise<void> {
+      throw new Error('setAll() is destructive and disabled. Restore this intentionally if needed.');
     },
     async remove(id: number): Promise<void> {
       await alertsStore.removeItem(id.toString());
@@ -270,7 +258,7 @@ export const LocalDB = {
     async getDeviceId(): Promise<string> {
       let deviceId = await metaStore.getItem<string>('deviceId');
       if (!deviceId) {
-        deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+        deviceId = 'device_' + crypto.randomUUID().replace(/-/g, '');
         await metaStore.setItem('deviceId', deviceId);
       }
       return deviceId;

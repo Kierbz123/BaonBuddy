@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import LocalDB from '@/services/localDB';
+import { generateId } from '@/utils/ids';
 import { SyncService } from '@/services/sync';
 import { useNetwork } from '@/hooks/useNetwork';
 import { useAuth } from '@/hooks/useAuth';
-import { format, subDays } from 'date-fns';
+import { format, subDays, startOfWeek } from 'date-fns';
 import type { Wallet, Transaction, Category, Alert, AllowanceSettings } from '@/types';
 import OfflineAIService from '@/services/aiSkills';
+import { logError } from '@/utils/errorLog';
 
 // Default categories seeded on first launch (no backend required)
 const DEFAULT_CATEGORIES: Omit<Category, 'id' | 'created_at'>[] = [
@@ -104,16 +106,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const cat = DEFAULT_CATEGORIES[i];
         const newCategory: Category = {
           ...cat,
-          id: Date.now() + i,
-          created_at: new Date().toISOString(),
+          id: generateId(),
+          created_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssXXX"),
         };
         await LocalDB.categories.set(newCategory);
       }
       await LocalDB.meta.setCategoriesSeeded(true);
-    } catch (error) {
-      console.error('Failed to seed categories:', error);
+    } catch (error: any) {
+      logError('Failed to seed categories', error?.toString());
     }
   }, []);
+
+  async function validateAndRepair(transactions: Transaction[], wallets: Wallet[]): Promise<{ transactions: Transaction[]; warnings: string[] }> {
+    const walletIds = new Set(wallets.map(w => w.id));
+    const warnings: string[] = [];
+    const seen = new Set<number>();
+
+    const cleaned = transactions.filter(t => {
+      if (seen.has(t.id)) { warnings.push(`Duplicate ID removed: ${t.id}`); return false; }
+      seen.add(t.id);
+      if (!walletIds.has(t.wallet_id)) { 
+        const warnMsg = `Orphaned tx flagged: ${t.id}`;
+        warnings.push(warnMsg); 
+        console.warn(warnMsg, t);
+        return true; 
+      }
+      if (!t.amount || isNaN(Number(t.amount)) || Number(t.amount) <= 0) { 
+        warnings.push(`Invalid amount flagged (kept): tx ${t.id}`); 
+        return true; 
+      }
+      return true;
+    });
+
+    return { transactions: cleaned, warnings };
+  }
 
   const loadLocalData = useCallback(async () => {
     try {
@@ -147,13 +173,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
         return enriched;
       });
-      setTransactions(enrichedTransactions);
+      
+      const repairResult = await validateAndRepair(enrichedTransactions, walletsData);
+      if (repairResult.warnings.length > 0) {
+        logError('DB Repair Applied during loadLocalData', repairResult.warnings.join('\n'));
+      }
+      
+      setTransactions(repairResult.transactions);
       setCategories(categoriesData);
       setAlerts(alertsData);
       setLastSync(lastSyncData);
       if (allowanceData) setAllowance(allowanceData);
-    } catch (error) {
-      console.error('Failed to load local data:', error);
+    } catch (error: any) {
+      logError('Failed to load local data', error?.toString());
     } finally {
       setIsLoading(false);
     }
@@ -188,7 +220,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         .filter(t => t.date === yesterdayStr)
         .reduce((s, t) => s + Number(t.amount), 0);
       const existingSnap = await LocalDB.dailySnapshots.get(yesterdayStr);
-      if (!existingSnap && yesterdaySpent > 0) {
+      if (!existingSnap) {
         await LocalDB.dailySnapshots.set({ date: yesterdayStr, spent: yesterdaySpent });
       }
       lastSnapshotDateRef.current = yesterdayStr;
@@ -214,7 +246,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Check for midnight day change every minute
   useEffect(() => {
     const interval = setInterval(() => {
-      if (lastSnapshotDateRef.current && lastSnapshotDateRef.current !== format(subDays(new Date(), 1), 'yyyy-MM-dd')) {
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+      if (lastSnapshotDateRef.current && lastSnapshotDateRef.current !== todayStr) {
         processDailySnapshotAndCarryOver(transactions, allowance);
       }
     }, 60_000);
@@ -234,8 +267,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const addWallet = useCallback(async (walletData: Omit<Wallet, 'id' | 'created_at'>) => {
     const newWallet: Wallet = {
       ...walletData,
-      id: Date.now(),
-      created_at: new Date().toISOString(),
+      id: generateId(),
+      created_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssXXX"),
     };
     await LocalDB.wallets.set(newWallet);
     setWallets(prev => [...prev, newWallet]);
@@ -250,13 +283,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const deleteWallet = useCallback(async (id: number) => {
+    const allTxns = await LocalDB.transactions.getAll();
+    const orphans = allTxns.filter(t => t.wallet_id === id);
+    for (const t of orphans) {
+      await LocalDB.transactions.remove(t.id);
+    }
     await LocalDB.wallets.remove(id);
     setWallets(prev => prev.filter(w => w.id !== id));
+    setTransactions(prev => prev.filter(t => t.wallet_id !== id));
   }, []);
 
   // ===================== TRANSACTION CRUD (Fully Offline) =====================
 
   const addTransaction = useCallback(async (transactionData: Omit<Transaction, 'id' | 'created_at' | 'synced'>) => {
+    if (
+      !transactionData.amount ||
+      isNaN(transactionData.amount) ||
+      !isFinite(transactionData.amount) ||
+      transactionData.amount <= 0 ||
+      transactionData.amount > 99999
+    ) {
+      throw new Error('Transaction amount must be a positive number up to ₱99,999.');
+    }
+
     // Enrich with category display fields so they render correctly offline
     let category_name: string | undefined;
     let category_icon: string | undefined;
@@ -287,8 +336,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       category_color,
       wallet_name,
       wallet_type,
-      id: Date.now(),
-      created_at: new Date().toISOString(),
+      id: generateId(),
+      local_temp_id: crypto.randomUUID(),
+      created_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssXXX"),
       synced: false,
     };
     await LocalDB.transactions.set(newTransaction);
@@ -320,7 +370,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    const updated = { ...transaction, ...updates, ...categoryEnrichment, synced: false };
+    let updated = { ...transaction, ...updates, ...categoryEnrichment, synced: false };
+    
+    // Balance reconciliation when amount changes
+    if (updates.amount !== undefined && updates.amount !== transaction.amount) {
+      const wallet = await LocalDB.wallets.get(transaction.wallet_id);
+      if (wallet) {
+        const diff = updates.amount - transaction.amount;
+        const updatedWallet = { ...wallet, balance: wallet.balance - diff };
+        await LocalDB.wallets.set(updatedWallet);
+        setWallets(prev => prev.map(w => w.id === updatedWallet.id ? updatedWallet : w));
+        // Include updated wallet balance implicitly by updating wallet entry 
+      }
+    }
+    
     await LocalDB.transactions.set(updated);
     setTransactions(prev => prev.map(t => t.id === id ? updated : t));
   }, []);
@@ -348,8 +411,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const addCategory = useCallback(async (categoryData: Omit<Category, 'id' | 'created_at'>) => {
     const newCategory: Category = {
       ...categoryData,
-      id: Date.now(),
-      created_at: new Date().toISOString(),
+      id: generateId(),
+      created_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssXXX"),
     };
     await LocalDB.categories.set(newCategory);
     setCategories(prev => [...prev, newCategory]);
@@ -360,30 +423,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const dismissAlert = useCallback(async (id: number) => {
     const alert = alerts.find(a => a.id === id);
     if (!alert) return;
-    const updated = { ...alert, dismissed: true, dismissed_at: new Date().toISOString() };
+    const updated = { ...alert, dismissed: true, dismissed_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssXXX") };
     await LocalDB.alerts.set(updated);
     setAlerts(prev => prev.map(a => a.id === id ? updated : a));
   }, [alerts]);
 
   const checkLowBalance = useCallback(async (walletId: number) => {
-    const wallet = wallets.find(w => w.id === walletId);
+    const dbWallets = await LocalDB.wallets.getAll();
+    const dbAlerts = await LocalDB.alerts.getAll();
+    const wallet = dbWallets.find(w => w.id === walletId);
     if (!wallet) return;
     const thresholds = [50, 25, 10];
     for (const threshold of thresholds) {
       if (wallet.balance <= threshold) {
-        const existingAlert = alerts.find(a =>
+        const existingAlert = dbAlerts.find(a =>
           a.wallet_id === walletId &&
           a.threshold === threshold &&
           !a.dismissed
         );
         if (!existingAlert) {
           const newAlert: Alert = {
-            id: Date.now(),
+            id: generateId(),
             user_id: 0,
             wallet_id: walletId,
             threshold,
             message: `Your ${wallet.name} wallet balance is below ₱${threshold}!`,
-            triggered_at: new Date().toISOString(),
+            triggered_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssXXX"),
             dismissed: false,
           };
           await LocalDB.alerts.set(newAlert);
@@ -405,26 +470,53 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const sync = useCallback(async () => {
     if (syncServiceRef.current) {
       await syncServiceRef.current.sync().catch(() => {});
-      await loadLocalData();
+      const [freshWallets, freshTxns] = await Promise.all([
+        LocalDB.wallets.getAll(),
+        LocalDB.transactions.getAll(),
+      ]);
+      setWallets(freshWallets);
+      setTransactions(freshTxns);
     }
-  }, [loadLocalData]);
+  }, []);
 
   // ===================== COMPUTED VALUES =====================
 
   const totalBalance = wallets.reduce((sum, w) => sum + Number(w.balance), 0);
-  const today = new Date().toISOString().split('T')[0];
+  const [today, setToday] = useState(format(new Date(), 'yyyy-MM-dd'));
+
+  useEffect(() => {
+    const updateToday = () => setToday(format(new Date(), 'yyyy-MM-dd'));
+    
+    // Calculate ms until next midnight
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setDate(midnight.getDate() + 1);
+    midnight.setHours(0, 0, 0, 0);
+    const msUntilMidnight = midnight.getTime() - now.getTime();
+
+    let intervalId: any;
+    const timeoutId = setTimeout(() => {
+      updateToday();
+      intervalId = setInterval(updateToday, 24 * 60 * 60 * 1000);
+    }, msUntilMidnight);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, []);
   const totalSpentToday = transactions
     .filter(t => t.date === today)
     .reduce((sum, t) => sum + Number(t.amount), 0);
-  const weekAgo = new Date();
-  weekAgo.setDate(weekAgo.getDate() - 7);
+  
+  const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd');
   const totalSpentThisWeek = transactions
-    .filter(t => new Date(t.date) >= weekAgo)
+    .filter(t => t.date >= weekStart)
     .reduce((sum, t) => sum + Number(t.amount), 0);
-  const monthAgo = new Date();
-  monthAgo.setDate(1);
+    
+  const monthAgo = format(subDays(new Date(), 30), 'yyyy-MM-dd');
   const totalSpentThisMonth = transactions
-    .filter(t => new Date(t.date) >= monthAgo)
+    .filter(t => t.date >= monthAgo)
     .reduce((sum, t) => sum + Number(t.amount), 0);
   const currentAllowanceSpent = allowance.period === 'daily'
     ? totalSpentToday

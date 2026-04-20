@@ -24,7 +24,9 @@ import { formatCurrency } from '@/utils/formatters';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import OfflineAIService from '@/services/aiSkills';
+import { AIErrorBoundary } from '@/components/AIErrorBoundary';
 import LocalDB from '@/services/localDB';
+import { logError } from '@/utils/errorLog';
 import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import type { ReceiptData } from '@/services/aiSkills';
@@ -81,8 +83,8 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
             toast.success(`🤖 Auto-categorized as ${matched.name}`);
           }
         }
-      } catch (e) {
-        console.error(e);
+      } catch (e: any) {
+        logError('AI Auto-categorization failed', e?.toString());
       } finally {
         setIsAILoading(false);
       }
@@ -106,7 +108,7 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
         setImagePreview(base64);
       }
     } catch (error: any) {
-      console.error('Camera error:', error);
+      logError('Camera error', error?.toString());
       if (error.message !== 'User cancelled photos app') {
         toast.error('Could not access camera/gallery');
       }
@@ -149,8 +151,8 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
           setIsAILoading(false);
         }
       }
-    } catch (err) {
-      console.error('[OCR]', err);
+    } catch (err: any) {
+      logError('[OCR] error', err?.toString());
       toast.error('Receipt scan failed. Try a clearer photo.');
     } finally {
       setIsScanning(false);
@@ -181,8 +183,8 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
     // Image is already stored as Base64 — no server upload needed
     const tx = {
       user_id: 0,
-      wallet_id: parseInt(walletId),
-      category_id: categoryId ? parseInt(categoryId) : undefined,
+      wallet_id: Number(walletId),
+      category_id: categoryId ? Number(categoryId) : undefined,
       amount: parsedAmount,
       note: note || undefined,
       date,
@@ -190,7 +192,7 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
     };
     
     await addTransaction(tx);
-    await checkLowBalance(parseInt(walletId));
+    await checkLowBalance(Number(walletId));
 
     // Background anomaly check — local stats, no API key needed
     const anomaly = OfflineAIService.checkAnomaly(tx, transactions, allowance.amount);
@@ -226,8 +228,8 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
             }
           ]
         });
-      } catch (e) {
-        console.error('Failed to schedule local notification', e);
+      } catch (e: any) {
+        logError('Failed to schedule local notification', e?.toString());
       }
     }
 
@@ -239,6 +241,7 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
   const quickAmounts = [50, 100, 200, 500, 1000];
 
   return (
+    <AIErrorBoundary featureName="Expense Tracking AI">
     <div className="p-4 space-y-4">
       {/* Header */}
       <motion.div
@@ -510,6 +513,7 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
         </Button>
       </motion.div>
     </div>
+    </AIErrorBoundary>
   );
 }
 

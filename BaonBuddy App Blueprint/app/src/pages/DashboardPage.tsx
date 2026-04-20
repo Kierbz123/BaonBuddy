@@ -33,7 +33,6 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     totalSpentToday, 
     totalSpentThisWeek,
     allowance,
-    currentAllowanceSpent,
     isLoading,
     dailyLimit,
     carryOver,
@@ -43,8 +42,6 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     aiDailyBudget,
     aiTodayDayName,
   } = useApp();
-
-  const totalSaved = Math.max(0, allowance.amount - currentAllowanceSpent);
 
   const [burnPrediction, setBurnPrediction] = useState<string | null>(null);
 
@@ -269,21 +266,6 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         </Card>
       </motion.div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 15 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="grid grid-cols-2 gap-3"
-      >
-        <div className="bg-white dark:bg-[#2D2D44] rounded-2xl p-4 shadow-sm text-center border border-gray-100 dark:border-gray-700">
-          <p className="text-2xl font-extrabold text-[#6C5CE7]">₱{currentAllowanceSpent.toLocaleString()}</p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold mt-1">Total Spent</p>
-        </div>
-        <div className="bg-white dark:bg-[#2D2D44] rounded-2xl p-4 shadow-sm text-center border border-gray-100 dark:border-gray-700">
-          <p className="text-2xl font-extrabold text-emerald-500">₱{totalSaved.toLocaleString()}</p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold mt-1">Total Saved</p>
-        </div>
-      </motion.div>
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}

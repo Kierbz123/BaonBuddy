@@ -35,6 +35,7 @@ export class SyncService {
           amount: t.amount,
           note: t.note,
           date: t.date,
+          local_temp_id: t.local_temp_id,
         }));
         
         const pushResult = await SyncAPI.push(
@@ -45,9 +46,11 @@ export class SyncService {
         
         for (const syncedTx of pushResult.transactions) {
           const localTx = unsyncedTransactions.find(t => 
-            t.amount === syncedTx.amount && 
-            t.date === syncedTx.date && 
-            t.wallet_id === syncedTx.wallet_id
+            (t.local_temp_id && t.local_temp_id === syncedTx.local_temp_id) || 
+            (t.amount === syncedTx.amount && 
+             t.date === syncedTx.date && 
+             t.wallet_id === syncedTx.wallet_id && 
+             t.note === syncedTx.note)
           );
           if (localTx) {
             await LocalDB.transactions.remove(localTx.id);
@@ -79,7 +82,6 @@ export class SyncService {
     try {
       this.onSyncStart?.();
       await this.sync();
-      this.onSyncComplete?.();
       return true;
     } catch (error) {
       this.onSyncError?.(error as Error);

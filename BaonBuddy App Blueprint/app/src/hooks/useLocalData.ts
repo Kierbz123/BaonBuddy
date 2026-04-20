@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import LocalDB from '@/services/localDB';
 import type { Wallet, Transaction, Category, Alert } from '@/types';
+import { logError } from '@/utils/errorLog';
 
 export function useLocalData() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
@@ -22,8 +23,8 @@ export function useLocalData() {
       setTransactions(transactionsData);
       setCategories(categoriesData);
       setAlerts(alertsData);
-    } catch (error) {
-      console.error('Failed to load local data:', error);
+    } catch (error: any) {
+      logError('Failed to load local data', error?.toString());
     } finally {
       setIsLoading(false);
     }

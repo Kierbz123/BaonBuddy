@@ -1,12 +1,22 @@
 import React, { createContext, useState, useEffect, useCallback } from 'react';
 import bcrypt from 'bcryptjs';
 import LocalDB from '@/services/localDB';
+import { logError } from '@/utils/errorLog';
 
 const BCRYPT_ROUNDS = 10;
 const MAX_PIN_ATTEMPTS = 5;
 const MAX_RECOVERY_ATTEMPTS = 5;
-const PIN_LOCKOUT_MS = 30 * 1000; // 30 seconds
 const RECOVERY_LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+function getLockoutDuration(failedAttempts: number): number {
+  if (failedAttempts <= 5)  return 30 * 1000;          // 30 seconds
+  if (failedAttempts <= 10) return 2 * 60 * 1000;      // 2 minutes
+  if (failedAttempts <= 15) return 10 * 60 * 1000;     // 10 minutes
+  if (failedAttempts <= 20) return 60 * 60 * 1000;     // 1 hour
+  return Infinity;                                     // permanent lock — requires recovery code
+}
+
+const COMMON_PINS = ['0000','1111','2222','3333','4444','5555','6666','7777','8888','9999','1234','4321','0123','9876','1122','1212'];
 
 interface AuthState {
   isUnlocked: boolean;
@@ -31,14 +41,23 @@ export interface AuthContextType extends AuthState {
 
 export const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function secureRandomIndex(max: number): number {
+  const arr = new Uint8Array(1);
+  let index: number;
+  do {
+    crypto.getRandomValues(arr);
+    index = arr[0];
+  } while (index >= Math.floor(256 / max) * max); // rejection sampling for uniform distribution
+  return index % max;
+}
+
 function generateRecoveryCode(): string {
   const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
   const groups: string[] = [];
   for (let g = 0; g < 3; g++) {
     let group = '';
     for (let i = 0; i < 4; i++) {
-      const randomIndex = Math.floor(Math.random() * chars.length);
-      group += chars[randomIndex];
+      group += chars[secureRandomIndex(chars.length)];
     }
     groups.push(group);
   }
@@ -73,8 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           hasSecurityQuestion,
           isLoading: false,
         });
-      } catch (error) {
-        console.error('Auth init error:', error);
+      } catch (error: any) {
+        logError('Auth init error', error?.toString());
         setState({
           isUnlocked: false,
           hasMPIN: false,
@@ -91,6 +110,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
         return { success: false, error: 'MPIN must be exactly 4 digits' };
+      }
+      if (COMMON_PINS.includes(pin)) {
+        return { success: false, error: 'This PIN is too common. Please choose a less predictable one.' };
       }
 
       const mpinHash = await bcrypt.hash(pin, BCRYPT_ROUNDS);
@@ -115,7 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       return { success: true, recoveryCode };
     } catch (error: any) {
-      console.error('Setup MPIN error:', error);
+      logError('Setup MPIN error', error?.toString());
       return { success: false, error: 'Failed to setup MPIN' };
     }
   }, []);
@@ -151,17 +173,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await LocalDB.auth.setFailedAttempts(newAttempts);
 
         if (newAttempts >= MAX_PIN_ATTEMPTS) {
-          const lockTime = Date.now() + PIN_LOCKOUT_MS;
-          await LocalDB.auth.setLockUntil(lockTime);
-          await LocalDB.auth.setFailedAttempts(0);
-          return { success: false, locked: true, lockSecondsLeft: Math.ceil(PIN_LOCKOUT_MS / 1000), error: `Locked for ${Math.ceil(PIN_LOCKOUT_MS / 1000)} seconds.` };
+          const lockoutDuration = getLockoutDuration(newAttempts);
+          if (lockoutDuration === Infinity) {
+            await LocalDB.auth.setLockUntil(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000); // effectively forever
+            return { success: false, locked: true, lockSecondsLeft: Infinity, error: 'Account locked securely. Please use your Recovery Code.' };
+          } else {
+            const lockTime = Date.now() + lockoutDuration;
+            await LocalDB.auth.setLockUntil(lockTime);
+            return { success: false, locked: true, lockSecondsLeft: Math.ceil(lockoutDuration / 1000), error: `Locked out for ${Math.ceil(lockoutDuration / 1000 / 60)} minutes.` };
+          }
         }
 
-        const remaining = MAX_PIN_ATTEMPTS - newAttempts;
-        return { success: false, error: `Incorrect MPIN. ${remaining} attempt${remaining !== 1 ? 's' : ''} remaining.` };
+        const remaining = MAX_PIN_ATTEMPTS - (newAttempts % 5);
+        return { success: false, error: `Incorrect MPIN. ${remaining} attempt${remaining !== 1 ? 's' : ''} until next lock.` };
       }
     } catch (error: any) {
-      console.error('Verify MPIN error:', error);
+      logError('Verify MPIN error', error?.toString());
       return { success: false, error: 'Verification failed' };
     }
   }, []);
@@ -216,6 +243,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
         return { success: false, error: 'MPIN must be exactly 4 digits' };
       }
+      if (COMMON_PINS.includes(newPin)) {
+        return { success: false, error: 'This PIN is too common. Please choose a less predictable one.' };
+      }
 
       const mpinHash = await bcrypt.hash(newPin, BCRYPT_ROUNDS);
       await LocalDB.auth.setMPINHash(mpinHash);
@@ -253,6 +283,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) {
         return { success: false, error: 'New MPIN must be exactly 4 digits' };
+      }
+      if (COMMON_PINS.includes(newPin)) {
+        return { success: false, error: 'This PIN is too common. Please choose a less predictable one.' };
       }
 
       const newHash = await bcrypt.hash(newPin, BCRYPT_ROUNDS);
@@ -368,10 +401,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const lock = useCallback(() => {
     setState(prev => ({ ...prev, isUnlocked: false }));
   }, []);
-
-  const logout = useCallback(() => {
-    setState(prev => ({ ...prev, isUnlocked: false }));
-  }, []);
+  const logout = lock;
 
   return (
     <AuthContext.Provider value={{

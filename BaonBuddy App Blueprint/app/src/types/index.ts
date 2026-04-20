@@ -35,6 +35,7 @@ export interface Transaction {
   wallet_type?: string;
   image_url?: string;
   synced?: boolean;
+  local_temp_id?: string;
 }
 
 export interface Alert {

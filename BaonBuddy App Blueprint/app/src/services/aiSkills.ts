@@ -1,4 +1,4 @@
-import { pipeline, env } from '@xenova/transformers';
+import { pipeline, env, type Pipeline } from '@xenova/transformers';
 import { createWorker } from 'tesseract.js';
 import type { Transaction } from '@/types';
 
@@ -12,17 +12,25 @@ env.allowRemoteModels = true;
 // ─── 1. Offline Auto-Categorization (MobileBERT) ─────────────────────────────
 
 class ClassifierSingleton {
-  private static instance: any = null;
-  private static loading: Promise<any> | null = null;
+  private static instance: Pipeline | null = null;
+  private static loading: Promise<Pipeline> | null = null;
 
-  static async get(): Promise<any> {
+  static async get(): Promise<Pipeline> {
     if (this.instance) return this.instance;
     if (!this.loading) {
       this.loading = pipeline('zero-shot-classification', 'Xenova/mobilebert-uncased-mnli', { quantized: true })
-        .then((p: any) => { this.instance = p; this.loading = null; return p; })
-        .catch((e: any) => { this.loading = null; throw e; });
+        .then((p: unknown) => { 
+          const pipe = p as Pipeline;
+          this.instance = pipe; 
+          this.loading = null; 
+          return pipe; 
+        })
+        .catch((e: unknown) => { 
+          this.loading = null; 
+          throw e; 
+        });
     }
-    return this.loading;
+    return this.loading as Promise<Pipeline>;
   }
 }
 
@@ -148,9 +156,9 @@ async function ocrExtractReceipt(
   onProgress?: (status: string) => void
 ): Promise<ReceiptData> {
   const worker = await createWorker('eng', 1, {
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js',
+    workerPath: '/tesseract/worker.min.js',
+    langPath: '/tesseract',
+    corePath: '/tesseract/tesseract-core.wasm.js',
     logger: (m: any) => {
       if (onProgress && typeof m.progress === 'number') {
         const pct = Math.round(m.progress * 100);
@@ -195,13 +203,12 @@ async function ocrExtractReceipt(
   // Merchant: first clean non-numeric non-keyword line
   const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
   let merchant: string | null = null;
-  for (const line of lines) {
-    if (/^\d+/.test(line)) continue;
-    if (/receipt|cashier|server|order|date|time|tel|www|thank you/i.test(line)) continue;
-    if (line.length < 3) continue;
-    merchant = line;
-    break;
-  }
+  
+  const SKIP_PATTERNS = /receipt|cashier|server|table|order|date|time|vat|tin|tel|www|thank you|\d{9,}/i;
+  const candidates = lines.filter(l => l.length > 2 && !SKIP_PATTERNS.test(l) && !/^\d+/.test(l));
+  
+  // Take the second non-filtered line if available (line 1 is often TIN/address in PH receipts)
+  merchant = candidates[1]?.trim() ?? candidates[0]?.trim() ?? 'Unknown';
 
   return { amount, merchant, rawText };
 }
