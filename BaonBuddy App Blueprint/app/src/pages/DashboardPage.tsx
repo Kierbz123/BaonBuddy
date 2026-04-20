@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { useApp } from '@/context/AppContext';
 import { Card, CardContent } from '@/components/ui/card';
@@ -11,7 +11,6 @@ import {
   Bell,
   ArrowRight,
   PiggyBank,
-  Loader2,
   Cpu,
   CalendarClock,
   AlertCircle
@@ -36,11 +35,13 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     allowance,
     currentAllowanceSpent,
     isLoading,
-    categories,
     dailyLimit,
     carryOver,
     todayBudgetLimit,
     todayBudgetRemaining,
+    isAIDrivenBudget,
+    aiDailyBudget,
+    aiTodayDayName,
   } = useApp();
 
   const totalSaved = Math.max(0, allowance.amount - currentAllowanceSpent);
@@ -178,10 +179,20 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
               <div className="w-8 h-8 rounded-xl bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
                 <CalendarClock className="w-4 h-4 text-[#6C5CE7]" />
               </div>
-              <div>
-                <p className="font-bold text-gray-900 dark:text-white text-sm">Today's Budget</p>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="font-bold text-gray-900 dark:text-white text-sm">Today's Budget</p>
+                  {isAIDrivenBudget && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 text-[9px] font-bold uppercase tracking-wide">
+                      <Cpu className="w-2.5 h-2.5" /> AI Adjusted
+                    </span>
+                  )}
+                </div>
                 <p className="text-[10px] text-gray-500 dark:text-gray-400">
-                  Base: {formatCurrency(dailyLimit)}{carryOver > 0 ? ` · Carry-over: -${formatCurrency(carryOver)}` : ''}
+                  {isAIDrivenBudget && aiDailyBudget !== null
+                    ? `AI learned you spend more on ${aiTodayDayName}s · Base: ${formatCurrency(dailyLimit)}`
+                    : `Base: ${formatCurrency(dailyLimit)}${carryOver > 0 ? ` · Carry-over: -${formatCurrency(carryOver)}` : ''}`
+                  }
                 </p>
               </div>
               {totalSpentToday > todayBudgetLimit && (

@@ -5,7 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import LocalDB from '@/services/localDB';
-import AIService from '@/services/ai';
+import AIService from '@/services/aiSkills';
 import { Label } from '@/components/ui/label';
 import { Wallet, Save, Shield, Lock, Trash2, AlertTriangle, KeyRound, LogOut, HelpCircle, RefreshCw, Cpu, Check, ExternalLink, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';

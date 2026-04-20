@@ -5,6 +5,7 @@ import { useNetwork } from '@/hooks/useNetwork';
 import { useAuth } from '@/hooks/useAuth';
 import { format, subDays } from 'date-fns';
 import type { Wallet, Transaction, Category, Alert, AllowanceSettings } from '@/types';
+import OfflineAIService from '@/services/aiSkills';
 
 // Default categories seeded on first launch (no backend required)
 const DEFAULT_CATEGORIES: Omit<Category, 'id' | 'created_at'>[] = [
@@ -48,6 +49,10 @@ interface AppContextType {
   carryOver: number;
   todayBudgetLimit: number;
   todayBudgetRemaining: number;
+  // AI-driven smart daily budget
+  aiDailyBudget: number | null;
+  isAIDrivenBudget: boolean;
+  aiTodayDayName: string;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -62,6 +67,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [allowance, setAllowance] = useState<AllowanceSettings>({ amount: 1000, period: 'monthly' });
   const [carryOver, setCarryOver] = useState<number>(0);
+  const [aiDailyBudget, setAIDailyBudget] = useState<number | null>(null);
+  const [isAIDrivenBudget, setIsAIDrivenBudget] = useState(false);
+  const [aiTodayDayName, setAITodayDayName] = useState('');
   const lastSnapshotDateRef = useRef<string>('');
   
   const { isOnline } = useNetwork();
@@ -430,8 +438,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     : allowance.period === 'weekly' ? 7
     : 30
   );
-  const todayBudgetLimit = Math.max(0, dailyLimit - carryOver);
+
+  // Use AI-adjusted limit when available, fall back to static
+  const effectiveDailyLimit = (isAIDrivenBudget && aiDailyBudget !== null)
+    ? aiDailyBudget
+    : dailyLimit;
+
+  const todayBudgetLimit = Math.max(0, effectiveDailyLimit - carryOver);
   const todayBudgetRemaining = Math.max(0, todayBudgetLimit - totalSpentToday);
+
+  // Recompute AI smart daily budget whenever transactions or allowance change
+  useEffect(() => {
+    if (allowance.period === 'weekly' && transactions.length >= 7) {
+      const result = OfflineAIService.computeSmartDailyBudget(transactions, allowance.amount);
+      setAIDailyBudget(result.aiLimit);
+      setIsAIDrivenBudget(result.isAIActive);
+      setAITodayDayName(result.todayDayName);
+    } else {
+      setAIDailyBudget(null);
+      setIsAIDrivenBudget(false);
+      setAITodayDayName('');
+    }
+  }, [transactions, allowance]);
 
 
   return (
@@ -464,6 +492,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       carryOver,
       todayBudgetLimit,
       todayBudgetRemaining,
+      aiDailyBudget,
+      isAIDrivenBudget,
+      aiTodayDayName,
     }}>
       {children}
     </AppContext.Provider>

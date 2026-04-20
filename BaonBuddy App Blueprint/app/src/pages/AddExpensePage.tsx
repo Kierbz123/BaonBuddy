@@ -16,7 +16,8 @@ import {
   Loader2,
   Camera,
   Upload,
-  X
+  X,
+  ScanLine
 } from 'lucide-react';
 import { CategoryIcon } from '@/components/CategoryIcon';
 import { formatCurrency } from '@/utils/formatters';
@@ -26,6 +27,7 @@ import OfflineAIService from '@/services/aiSkills';
 import LocalDB from '@/services/localDB';
 import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import type { ReceiptData } from '@/services/aiSkills';
 
 /** Convert a blob/file URL to a Base64 data URI for offline storage */
 async function toBase64DataUri(blobUrl: string): Promise<string> {
@@ -54,6 +56,8 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAILoading, setIsAILoading] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanStatus, setScanStatus] = useState('');
 
 
 
@@ -97,7 +101,6 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
       });
 
       if (photo.webPath) {
-        // Convert to Base64 for offline/local storage — no server needed
         const base64 = await toBase64DataUri(photo.webPath);
         setImageBase64(base64);
         setImagePreview(base64);
@@ -107,6 +110,51 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
       if (error.message !== 'User cancelled photos app') {
         toast.error('Could not access camera/gallery');
       }
+    }
+  };
+
+  const handleScanReceipt = async () => {
+    if (!imageBase64) return;
+    setIsScanning(true);
+    setScanStatus('Initializing OCR engine...');
+    try {
+      const result: ReceiptData = await OfflineAIService.extractReceiptData(
+        imageBase64,
+        (status) => setScanStatus(status)
+      );
+
+      // Auto-fill amount
+      if (result.amount !== null) {
+        setAmount(result.amount.toString());
+        toast.success(`Got total: ${result.amount.toFixed(2)}`);
+      } else {
+        toast.warning('Could not detect total — please enter manually.');
+      }
+
+      // Auto-fill note from merchant name
+      if (result.merchant) {
+        setNote(result.merchant);
+        // Bonus: also trigger MobileBERT categorization on merchant name
+        if (!categoryId) {
+          setIsAILoading(true);
+          const catNames = categories.map(c => c.name);
+          const suggested = await OfflineAIService.categorizeExpense(result.merchant, catNames);
+          if (suggested) {
+            const matched = categories.find(c => c.name === suggested);
+            if (matched && !categoryId) {
+              setCategoryId(matched.id.toString());
+              toast.success(`Auto-categorized as ${matched.name}`);
+            }
+          }
+          setIsAILoading(false);
+        }
+      }
+    } catch (err) {
+      console.error('[OCR]', err);
+      toast.error('Receipt scan failed. Try a clearer photo.');
+    } finally {
+      setIsScanning(false);
+      setScanStatus('');
     }
   };
 
@@ -358,33 +406,56 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
             <motion.div 
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className="relative rounded-2xl overflow-hidden border-2 border-[#6C5CE7] shadow-xl group"
+              className="space-y-3"
             >
-              <img src={imagePreview} alt="Preview" className="w-full h-56 object-cover" />
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="bg-white/20 border-white text-white hover:bg-white/40 rounded-full"
-                  onClick={() => document.getElementById('camera-input')?.click()}
-                >
-                  <Camera className="w-4 h-4 mr-2" /> Retake
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="rounded-full"
-                  onClick={() => {
-                    setImageBase64(null);
-                    setImagePreview(null);
-                  }}
-                >
-                  <X className="w-4 h-4 mr-2" /> Remove
-                </Button>
+              <div className="relative rounded-2xl overflow-hidden border-2 border-[#6C5CE7] shadow-xl group">
+                <img src={imagePreview} alt="Preview" className="w-full h-56 object-cover" />
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-white/20 border-white text-white hover:bg-white/40 rounded-full"
+                    onClick={() => handleCapture(CameraSource.Camera)}
+                  >
+                    <Camera className="w-4 h-4 mr-2" /> Retake
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="rounded-full"
+                    onClick={() => {
+                      setImageBase64(null);
+                      setImagePreview(null);
+                    }}
+                  >
+                    <X className="w-4 h-4 mr-2" /> Remove
+                  </Button>
+                </div>
+                <div className="absolute top-2 right-2 px-2 py-1 bg-black/60 rounded-lg text-white text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm">
+                  Saved locally
+                </div>
               </div>
-              <div className="absolute top-2 right-2 px-2 py-1 bg-black/60 rounded-lg text-white text-[10px] font-bold uppercase tracking-wider backdrop-blur-sm">
-                Saved locally ✓
-              </div>
+
+              {/* AI Scan Receipt Button */}
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={handleScanReceipt}
+                disabled={isScanning}
+                className="w-full h-14 rounded-2xl flex items-center justify-center gap-3 bg-gradient-to-r from-violet-600 to-indigo-500 text-white font-bold shadow-lg shadow-violet-500/30 disabled:opacity-60 transition-all"
+              >
+                {isScanning ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span className="text-sm">{scanStatus || 'Scanning...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <ScanLine className="w-5 h-5" />
+                    <span>Scan Receipt with AI</span>
+                  </>
+                )}
+              </motion.button>
             </motion.div>
           ) : (
             <div className="grid grid-cols-2 gap-4">
