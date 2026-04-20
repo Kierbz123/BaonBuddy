@@ -19,11 +19,13 @@ import {
   X
 } from 'lucide-react';
 import { CategoryIcon } from '@/components/CategoryIcon';
+import { formatCurrency } from '@/utils/formatters';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
-import AIService from '@/services/ai';
+import OfflineAIService from '@/services/aiSkills';
 import LocalDB from '@/services/localDB';
 import { Camera as CapCamera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 /** Convert a blob/file URL to a Base64 data URI for offline storage */
 async function toBase64DataUri(blobUrl: string): Promise<string> {
@@ -42,7 +44,7 @@ interface AddExpensePageProps {
 }
 
 export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
-  const { wallets, categories, transactions, allowance, addTransaction, checkLowBalance } = useApp();
+  const { wallets, categories, transactions, allowance, addTransaction, checkLowBalance, todayBudgetLimit, todayBudgetRemaining } = useApp();
   const [amount, setAmount] = useState('');
   const [walletId, setWalletId] = useState('');
   const [categoryId, setCategoryId] = useState('');
@@ -51,25 +53,39 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
   const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAILoading, setIsAILoading] = useState(false);
 
+
+
+  // Auto-Categorization triggered by typing a note (debounced)
   useEffect(() => {
-    const cachedVoiceRaw = localStorage.getItem('voicememo_extracted');
-    if (cachedVoiceRaw && categories.length > 0) {
+    if (!note || note.length < 3) return;
+
+    const timeout = setTimeout(async () => {
+      // Don't override if they manually picked a category
+      if (categoryId) return;
+      
+      setIsAILoading(true);
+      const catNames = categories.map(c => c.name);
       try {
-        const voiceData = JSON.parse(cachedVoiceRaw);
-        if (voiceData.amount) setAmount(voiceData.amount.toString());
-        if (voiceData.description) setNote(voiceData.description);
-        
-        const matchedCat = categories.find(c => c.name.toLowerCase() === (voiceData.category || '').toLowerCase());
-        if (matchedCat) setCategoryId(matchedCat.id.toString());
-        
-        toast.info('Voice details filled! Please review before saving.');
-        localStorage.removeItem('voicememo_extracted');
+        const suggested = await OfflineAIService.categorizeExpense(note, catNames);
+        if (suggested) {
+          const matched = categories.find(c => c.name === suggested);
+          // Check again just in case they picked one while loading
+          if (matched && !categoryId) {
+            setCategoryId(matched.id.toString());
+            toast.success(`🤖 Auto-categorized as ${matched.name}`);
+          }
+        }
       } catch (e) {
-        console.error("Failed parsing voice memo", e);
+        console.error(e);
+      } finally {
+        setIsAILoading(false);
       }
-    }
-  }, [categories]);
+    }, 1500); // Wait 1.5s after they stop typing
+
+    return () => clearTimeout(timeout);
+  }, [note, categories]);
 
   const handleCapture = async (source: CameraSource) => {
     try {
@@ -128,21 +144,43 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
     await addTransaction(tx);
     await checkLowBalance(parseInt(walletId));
 
-    // Optional background anomaly check
-    if (await AIService.hasApiKey()) {
-      AIService.checkAnomaly(tx, transactions, allowance.amount).then(result => {
-        if (result.isAnomaly) {
-           LocalDB.alerts.set({
-             id: Date.now(),
-             user_id: 0,
-             threshold: 0,
-             message: `AI Splurge Warning: ${result.message}`,
-             triggered_at: new Date().toISOString(),
-             dismissed: false
-           });
-           toast.warning(`AI Alert: ${result.message}`);
-        }
+    // Background anomaly check — local stats, no API key needed
+    const anomaly = OfflineAIService.checkAnomaly(tx, transactions, allowance.amount);
+    if (anomaly.isAnomaly) {
+      const alertId = Date.now();
+      LocalDB.alerts.set({
+        id: alertId,
+        user_id: 0,
+        threshold: 0,
+        message: `🚨 Splurge Alert: ${anomaly.message}`,
+        triggered_at: new Date().toISOString(),
+        dismissed: false
       });
+      toast.warning(`🚨 ${anomaly.message}`);
+
+      // Fire a true Android system notification
+      try {
+        const permStatus = await LocalNotifications.checkPermissions();
+        if (permStatus.display === 'prompt') {
+           await LocalNotifications.requestPermissions();
+        }
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              title: "BaonBuddy Splurge Alert 🚨",
+              body: anomaly.message,
+              id: alertId,
+              schedule: { at: new Date(Date.now() + 1000) },
+              sound: undefined,
+              attachments: undefined,
+              actionTypeId: "",
+              extra: null
+            }
+          ]
+        });
+      } catch (e) {
+        console.error('Failed to schedule local notification', e);
+      }
     }
 
     setIsSubmitting(false);
@@ -185,6 +223,31 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
                 className="text-4xl font-bold bg-transparent border-0 text-white placeholder:text-white/50 focus-visible:ring-0 p-0 h-auto"
               />
             </div>
+            {/* Daily budget remaining indicator */}
+            {todayBudgetLimit > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/20">
+                <div className="flex justify-between text-white/70 text-xs mb-1">
+                  <span>Today's budget</span>
+                  <span className={parseFloat(amount || '0') > todayBudgetRemaining ? 'text-red-300 font-bold' : ''}>
+                    {formatCurrency(todayBudgetRemaining)} left
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: `${Math.min(100, (parseFloat(amount || '0') / todayBudgetLimit) * 100)}%`,
+                      backgroundColor: parseFloat(amount || '0') > todayBudgetRemaining ? '#fca5a5' : '#a5f3fc'
+                    }}
+                  />
+                </div>
+                {parseFloat(amount || '0') > todayBudgetRemaining && todayBudgetRemaining >= 0 && (
+                  <p className="text-red-300 text-[10px] font-bold mt-1">
+                    ⚠️ Exceeds today's budget by {formatCurrency(parseFloat(amount || '0') - todayBudgetRemaining)}. Excess carries to tomorrow.
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>
@@ -236,9 +299,10 @@ export function AddExpensePage({ onNavigate }: AddExpensePageProps) {
         </div>
 
         <div className="space-y-2">
-          <Label className="flex items-center gap-2">
+          <Label className="flex flex-row items-center gap-2">
             <Tag className="w-4 h-4" />
             Category
+            {isAILoading && <Loader2 className="w-3 h-3 text-[#6C5CE7] animate-spin ml-1" />}
           </Label>
           <Select value={categoryId} onValueChange={setCategoryId}>
             <SelectTrigger className="rounded-xl h-12">

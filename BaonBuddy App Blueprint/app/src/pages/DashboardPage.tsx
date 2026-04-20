@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { useApp } from '@/context/AppContext';
 import { Card, CardContent } from '@/components/ui/card';
@@ -11,16 +11,16 @@ import {
   Bell,
   ArrowRight,
   PiggyBank,
-  Mic,
   Loader2,
-  Cpu
+  Cpu,
+  CalendarClock,
+  AlertCircle
 } from 'lucide-react';
 import { CategoryIcon } from '@/components/CategoryIcon';
 import { formatCurrency, formatDate } from '@/utils/formatters';
 import { toast } from 'sonner';
-import AIService from '@/services/ai';
-import { VoiceRecorder } from 'capacitor-voice-recorder';
-
+import OfflineAIService from '@/services/aiSkills';
+// Offline AI Service for burn rate prediction
 interface DashboardPageProps {
   onNavigate: (page: string) => void;
 }
@@ -34,19 +34,25 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     totalSpentToday, 
     totalSpentThisWeek,
     allowance,
-    isLoading 
+    currentAllowanceSpent,
+    isLoading,
+    categories,
+    dailyLimit,
+    carryOver,
+    todayBudgetLimit,
+    todayBudgetRemaining,
   } = useApp();
 
-  const [burnPrediction, setBurnPrediction] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  const totalSaved = Math.max(0, allowance.amount - currentAllowanceSpent);
 
+  const [burnPrediction, setBurnPrediction] = useState<string | null>(null);
+
+  // Burn-rate prediction — fully local, no API key
   useEffect(() => {
-    AIService.hasApiKey().then(hasKey => {
-      if (hasKey && transactions.length > 2) {
-        AIService.predictBurnRate(transactions, allowance.amount).then(setBurnPrediction);
-      }
-    });
+    if (transactions.length > 2) {
+      const prediction = OfflineAIService.predictBurnRate(transactions, allowance.amount);
+      setBurnPrediction(prediction);
+    }
   }, [transactions, allowance]);
 
   const activeAlerts = alerts.filter(a => !a.dismissed);
@@ -68,65 +74,7 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
     }
   }, [wallets]);
 
-  const startRecording = async () => {
-    try {
-      const canRecord = await VoiceRecorder.canDeviceVoiceRecord();
-      if (!canRecord.value) {
-        toast.error('Device cannot record audio');
-        return;
-      }
-      
-      const hasPermission = await VoiceRecorder.hasAudioRecordingPermission();
-      if (!hasPermission.value) {
-        const permission = await VoiceRecorder.requestAudioRecordingPermission();
-        if (!permission.value) {
-            toast.error('Microphone permission required for voice expenses.');
-            return;
-        }
-      }
 
-      await VoiceRecorder.startRecording();
-      setIsRecording(true);
-      toast.info('Listening... Tap mic again to stop.');
-
-    } catch (e) {
-      console.error(e);
-      toast.error('Microphone permission required for voice expenses.');
-    }
-  };
-
-  const stopRecording = async () => {
-    try {
-      if (!isRecording) return;
-      
-      setIsRecording(false);
-      setIsProcessingVoice(true);
-      const result = await VoiceRecorder.stopRecording();
-      
-      if (result.value && result.value.recordDataBase64) {
-        const parsed = await AIService.parseVoiceExpense(
-          result.value.recordDataBase64, 
-          result.value.mimeType || 'audio/aac'
-        );
-        setIsProcessingVoice(false);
-
-        if (parsed && parsed.is_valid_expense) {
-            localStorage.setItem('voicememo_extracted', JSON.stringify(parsed));
-            toast.success('Voice extracted! Redirecting...');
-            onNavigate('add');
-        } else {
-            toast.error('Could not extract a valid expense from audio.');
-        }
-      } else {
-        setIsProcessingVoice(false);
-        toast.error('Failed to capture audio.');
-      }
-    } catch(e) {
-       setIsProcessingVoice(false);
-       console.error(e);
-       toast.error('Error processing audio.');
-    }
-  };
 
   if (isLoading) {
     return (
@@ -218,7 +166,113 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         </Card>
       </motion.div>
 
-      {/* Wallets */}
+      {/* Daily Budget + Carry-Over Widget */}
+      <motion.div
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+      >
+        <Card className="border-0 shadow-lg bg-white dark:bg-[#2D2D44] overflow-hidden">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-8 h-8 rounded-xl bg-indigo-100 dark:bg-indigo-900/30 flex items-center justify-center">
+                <CalendarClock className="w-4 h-4 text-[#6C5CE7]" />
+              </div>
+              <div>
+                <p className="font-bold text-gray-900 dark:text-white text-sm">Today's Budget</p>
+                <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                  Base: {formatCurrency(dailyLimit)}{carryOver > 0 ? ` · Carry-over: -${formatCurrency(carryOver)}` : ''}
+                </p>
+              </div>
+              {totalSpentToday > todayBudgetLimit && (
+                <div className="ml-auto">
+                  <AlertCircle className="w-5 h-5 text-red-500" />
+                </div>
+              )}
+            </div>
+
+            {/* Carry-over badge */}
+            {carryOver > 0 && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className="mb-3 px-3 py-2 bg-orange-50 dark:bg-orange-950/30 border border-orange-200 dark:border-orange-800 rounded-xl flex items-center gap-2"
+              >
+                <TrendingDown className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                <p className="text-xs text-orange-700 dark:text-orange-400 font-medium">
+                  Yesterday's excess of {formatCurrency(carryOver)} has been deducted from today.
+                </p>
+              </motion.div>
+            )}
+
+            {/* Progress bar */}
+            <div className="space-y-2">
+              <div className="flex justify-between items-baseline">
+                <span className="text-2xl font-extrabold text-gray-900 dark:text-white">
+                  {formatCurrency(todayBudgetRemaining)}
+                </span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  of {formatCurrency(todayBudgetLimit)} remaining
+                </span>
+              </div>
+              <div className="w-full h-3 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                {(() => {
+                  const pct = todayBudgetLimit > 0
+                    ? Math.min(100, (totalSpentToday / todayBudgetLimit) * 100)
+                    : 0;
+                  const barColor = pct >= 100 ? '#ef4444' : pct >= 75 ? '#f97316' : '#6C5CE7';
+                  return (
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${pct}%` }}
+                      transition={{ duration: 0.6, ease: 'easeOut' }}
+                      className="h-full rounded-full"
+                      style={{ backgroundColor: barColor }}
+                    />
+                  );
+                })()}
+              </div>
+              <div className="flex justify-between text-[10px] text-gray-400 dark:text-gray-500 font-medium">
+                <span>Spent: {formatCurrency(totalSpentToday)}</span>
+                <span>
+                  {todayBudgetLimit > 0
+                    ? `${Math.min(100, Math.round((totalSpentToday / todayBudgetLimit) * 100))}% used`
+                    : '—'}
+                </span>
+              </div>
+            </div>
+
+            {/* Over-budget warning */}
+            {totalSpentToday > todayBudgetLimit && todayBudgetLimit > 0 && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="mt-3 px-3 py-2 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-xl"
+              >
+                <p className="text-xs text-red-600 dark:text-red-400 font-semibold">
+                  ⚠️ Over budget by {formatCurrency(totalSpentToday - todayBudgetLimit)}. This excess will carry over tomorrow.
+                </p>
+              </motion.div>
+            )}
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 15 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+        className="grid grid-cols-2 gap-3"
+      >
+        <div className="bg-white dark:bg-[#2D2D44] rounded-2xl p-4 shadow-sm text-center border border-gray-100 dark:border-gray-700">
+          <p className="text-2xl font-extrabold text-[#6C5CE7]">₱{currentAllowanceSpent.toLocaleString()}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold mt-1">Total Spent</p>
+        </div>
+        <div className="bg-white dark:bg-[#2D2D44] rounded-2xl p-4 shadow-sm text-center border border-gray-100 dark:border-gray-700">
+          <p className="text-2xl font-extrabold text-emerald-500">₱{totalSaved.toLocaleString()}</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold mt-1">Total Saved</p>
+        </div>
+      </motion.div>
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -359,15 +413,6 @@ export function DashboardPage({ onNavigate }: DashboardPageProps) {
         transition={{ delay: 0.6, type: 'spring' }}
         className="fixed bottom-24 right-4 flex flex-col gap-3 items-center"
       >
-        <Button
-          size="icon"
-          className={`w-12 h-12 rounded-full shadow-lg ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-white text-indigo-600 border border-gray-200'}`}
-          onClick={isRecording ? stopRecording : startRecording}
-          disabled={isProcessingVoice}
-        >
-          {isProcessingVoice ? <Loader2 className="w-5 h-5 animate-spin text-indigo-600" /> : <Mic className={`w-5 h-5 ${isRecording ? 'text-white' : ''}`} />}
-        </Button>
-
         <Button
           size="lg"
           className="w-14 h-14 rounded-full bg-gradient-to-r from-[#6C5CE7] to-[#A463F5] shadow-lg shadow-purple-500/40 hover:shadow-xl hover:shadow-purple-500/50"

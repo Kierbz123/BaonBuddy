@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   ArrowLeft, 
   TrendingDown,
+  TrendingUp,
   Calendar,
   PieChart,
   BarChart3,
@@ -15,8 +16,8 @@ import {
   Sparkles
 } from 'lucide-react';
 import { formatCurrency } from '@/utils/formatters';
-import { format, subDays } from 'date-fns';
-import AIService from '@/services/ai';
+import { format, subDays, startOfWeek, endOfWeek } from 'date-fns';
+import OfflineAIService from '@/services/aiSkills';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -114,6 +115,78 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
     };
   }, [filteredTransactions]);
 
+  // ── Weekly comparison: this week vs last week (Mon–Sun) ──
+  const weeklyComparisonData = useMemo(() => {
+    const now = new Date();
+    const thisWeekStart = startOfWeek(now, { weekStartsOn: 1 }); // Monday
+    const lastWeekStart = startOfWeek(subDays(now, 7), { weekStartsOn: 1 });
+
+    const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    const thisWeekAmounts = Array(7).fill(0);
+    const lastWeekAmounts = Array(7).fill(0);
+
+    transactions.forEach(t => {
+      const d = new Date(t.date);
+      const thisWeekEnd = endOfWeek(now, { weekStartsOn: 1 });
+      const lastWeekEnd = endOfWeek(subDays(now, 7), { weekStartsOn: 1 });
+
+      if (d >= thisWeekStart && d <= thisWeekEnd) {
+        // 0=Mon … 6=Sun
+        const idx = (d.getDay() + 6) % 7;
+        thisWeekAmounts[idx] += Number(t.amount);
+      } else if (d >= lastWeekStart && d <= lastWeekEnd) {
+        const idx = (d.getDay() + 6) % 7;
+        lastWeekAmounts[idx] += Number(t.amount);
+      }
+    });
+
+    const thisWeekTotal = thisWeekAmounts.reduce((a, b) => a + b, 0);
+    const lastWeekTotal = lastWeekAmounts.reduce((a, b) => a + b, 0);
+    const diff = thisWeekTotal - lastWeekTotal;
+    const diffPct = lastWeekTotal > 0 ? ((diff / lastWeekTotal) * 100).toFixed(1) : null;
+
+    return { dayLabels, thisWeekAmounts, lastWeekAmounts, thisWeekTotal, lastWeekTotal, diff, diffPct };
+  }, [transactions]);
+
+  const weeklyChartData = {
+    labels: weeklyComparisonData.dayLabels,
+    datasets: [
+      {
+        label: 'This Week',
+        data: weeklyComparisonData.thisWeekAmounts,
+        backgroundColor: 'rgba(108, 92, 231, 0.85)',
+        borderColor: 'rgba(108, 92, 231, 1)',
+        borderWidth: 1,
+        borderRadius: 4,
+      },
+      {
+        label: 'Last Week',
+        data: weeklyComparisonData.lastWeekAmounts,
+        backgroundColor: 'rgba(108, 92, 231, 0.25)',
+        borderColor: 'rgba(108, 92, 231, 0.5)',
+        borderWidth: 1,
+        borderRadius: 4,
+      },
+    ],
+  };
+
+  const weeklyChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top' as const,
+        labels: { boxWidth: 12, padding: 12, font: { size: 11 } },
+      },
+    },
+    scales: {
+      y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' } },
+      x: { grid: { display: false } },
+    },
+  };
+
   const barChartData = {
     labels: dailyData.labels,
     datasets: [
@@ -179,10 +252,11 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
     },
   };
 
-  const handleAskAI = async () => {
+  const handleAskAI = () => {
     setIsAskingAI(true);
     setAiTips([]);
-    const tips = await AIService.generateInsights(filteredTransactions, allowance.amount);
+    // Instant local analysis — no API call, no quota
+    const tips = OfflineAIService.generateInsights(filteredTransactions, allowance.amount);
     setAiTips(tips);
     setIsAskingAI(false);
   };
@@ -318,13 +392,17 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
         transition={{ delay: 0.3 }}
       >
         <Tabs defaultValue="daily" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="daily">
-              <BarChart3 className="w-4 h-4 mr-2" />
+              <BarChart3 className="w-4 h-4 mr-1" />
               Daily
             </TabsTrigger>
+            <TabsTrigger value="weekly">
+              <Calendar className="w-4 h-4 mr-1" />
+              Weekly
+            </TabsTrigger>
             <TabsTrigger value="category">
-              <PieChart className="w-4 h-4 mr-2" />
+              <PieChart className="w-4 h-4 mr-1" />
               Categories
             </TabsTrigger>
           </TabsList>
@@ -340,6 +418,113 @@ export function AnalyticsPage({ onNavigate }: AnalyticsPageProps) {
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="weekly">
+            <div className="space-y-3">
+              {/* Summary comparison strip */}
+              <div className="grid grid-cols-2 gap-3">
+                <Card className="border-0 shadow-sm bg-white dark:bg-[#2D2D44]">
+                  <CardContent className="p-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2.5 h-2.5 rounded-full bg-[#6C5CE7]" />
+                      <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">This Week</span>
+                    </div>
+                    <p className="text-xl font-bold text-gray-900 dark:text-white">
+                      {formatCurrency(weeklyComparisonData.thisWeekTotal)}
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card className="border-0 shadow-sm bg-white dark:bg-[#2D2D44]">
+                  <CardContent className="p-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2.5 h-2.5 rounded-full bg-[#6C5CE7] opacity-30" />
+                      <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">Last Week</span>
+                    </div>
+                    <p className="text-xl font-bold text-gray-900 dark:text-white">
+                      {formatCurrency(weeklyComparisonData.lastWeekTotal)}
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Trend badge */}
+              {weeklyComparisonData.diffPct !== null && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold ${
+                    weeklyComparisonData.diff > 0
+                      ? 'bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 border border-red-100 dark:border-red-900/30'
+                      : 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30'
+                  }`}
+                >
+                  {weeklyComparisonData.diff > 0 ? (
+                    <TrendingUp className="w-4 h-4" />
+                  ) : (
+                    <TrendingDown className="w-4 h-4" />
+                  )}
+                  <span>
+                    {weeklyComparisonData.diff > 0 ? '+' : ''}{weeklyComparisonData.diffPct}% vs last week
+                    {weeklyComparisonData.diff > 0 ? ' — spending increased' : ' — spending decreased 🎉'}
+                  </span>
+                </motion.div>
+              )}
+
+              {/* Grouped bar chart */}
+              <Card className="border-0 shadow-lg bg-white dark:bg-[#2D2D44]">
+                <CardHeader>
+                  <CardTitle className="text-lg">This Week vs Last Week</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-64">
+                    <Bar data={weeklyChartData} options={weeklyChartOptions} />
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Per-day breakdown */}
+              <div className="space-y-2">
+                {weeklyComparisonData.dayLabels.map((day, i) => {
+                  const thisAmt = weeklyComparisonData.thisWeekAmounts[i];
+                  const lastAmt = weeklyComparisonData.lastWeekAmounts[i];
+                  const higher = thisAmt > lastAmt;
+                  return (
+                    <Card key={day} className="border-0 shadow-sm bg-white dark:bg-[#2D2D44]">
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 w-10">{day}</span>
+                          <div className="flex-1 mx-3">
+                            <div className="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+                              <motion.div
+                                initial={{ width: 0 }}
+                                animate={{
+                                  width: weeklyComparisonData.thisWeekTotal > 0
+                                    ? `${(thisAmt / Math.max(...weeklyComparisonData.thisWeekAmounts, ...weeklyComparisonData.lastWeekAmounts, 1)) * 100}%`
+                                    : '0%'
+                                }}
+                                transition={{ duration: 0.5, delay: i * 0.05 }}
+                                className="h-full rounded-full bg-[#6C5CE7]"
+                              />
+                            </div>
+                          </div>
+                          <div className="text-right min-w-[100px]">
+                            <span className="text-sm font-bold text-gray-900 dark:text-white">{formatCurrency(thisAmt)}</span>
+                            <span className="text-[10px] text-gray-400 ml-2">
+                              {lastAmt > 0 ? (
+                                <span className={higher ? 'text-red-400' : 'text-emerald-400'}>
+                                  vs {formatCurrency(lastAmt)}
+                                </span>
+                              ) : 'no data'}
+                            </span>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
           </TabsContent>
           
           <TabsContent value="category">

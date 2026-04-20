@@ -3,7 +3,7 @@ import {
   Home, 
   BarChart2, 
   Plus, 
-  Target, 
+  Wallet, 
   User 
 } from 'lucide-react';
 
@@ -17,7 +17,7 @@ export function BottomNav({ currentPage, onNavigate }: BottomNavProps) {
     { id: 'dashboard', icon: Home, label: 'Home' },
     { id: 'analytics', icon: BarChart2, label: 'Insights' },
     { id: 'add', icon: Plus, label: 'Add', isFab: true },
-    { id: 'wallets', icon: Target, label: 'Goals' },
+    { id: 'wallets', icon: Wallet, label: 'Wallets' },
     { id: 'settings', icon: User, label: 'Profile' },
   ];
 

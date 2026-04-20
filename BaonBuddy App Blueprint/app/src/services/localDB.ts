@@ -1,5 +1,5 @@
 import localforage from 'localforage';
-import type { Wallet, Transaction, Category, Alert, AllowanceSettings } from '@/types';
+import type { Wallet, Transaction, Category, Alert, AllowanceSettings, DailySnapshot } from '@/types';
 
 localforage.config({
   name: 'BaonBuddy',
@@ -35,6 +35,11 @@ const metaStore = localforage.createInstance({
 const authStore = localforage.createInstance({
   name: 'BaonBuddy',
   storeName: 'auth',
+});
+
+const dailySnapshotsStore = localforage.createInstance({
+  name: 'BaonBuddy',
+  storeName: 'daily_snapshots',
 });
 
 export const LocalDB = {
@@ -307,6 +312,27 @@ export const LocalDB = {
       await categoriesStore.clear();
       await alertsStore.clear();
       await authStore.clear();
+      await dailySnapshotsStore.clear();
+    },
+  },
+
+  // --- Daily Snapshots (for carry-over calculation) ---
+  dailySnapshots: {
+    async get(date: string): Promise<DailySnapshot | null> {
+      return dailySnapshotsStore.getItem(date);
+    },
+    async set(snapshot: DailySnapshot): Promise<void> {
+      await dailySnapshotsStore.setItem(snapshot.date, snapshot);
+    },
+    async getAll(): Promise<DailySnapshot[]> {
+      const snapshots: DailySnapshot[] = [];
+      await dailySnapshotsStore.iterate((value: DailySnapshot) => {
+        snapshots.push(value);
+      });
+      return snapshots.sort((a, b) => b.date.localeCompare(a.date));
+    },
+    async clear(): Promise<void> {
+      await dailySnapshotsStore.clear();
     },
   },
 };

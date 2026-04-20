@@ -143,3 +143,8 @@ export interface AllowanceSettings {
   amount: number;
   period: 'daily' | 'weekly' | 'monthly';
 }
+
+export interface DailySnapshot {
+  date: string;   // 'yyyy-MM-dd'
+  spent: number;  // total amount spent that day
+}

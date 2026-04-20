@@ -3,6 +3,7 @@ import LocalDB from '@/services/localDB';
 import { SyncService } from '@/services/sync';
 import { useNetwork } from '@/hooks/useNetwork';
 import { useAuth } from '@/hooks/useAuth';
+import { format, subDays } from 'date-fns';
 import type { Wallet, Transaction, Category, Alert, AllowanceSettings } from '@/types';
 
 // Default categories seeded on first launch (no backend required)
@@ -42,6 +43,11 @@ interface AppContextType {
   totalSpentThisWeek: number;
   totalSpentThisMonth: number;
   currentAllowanceSpent: number;
+  // Daily budget + carry-over
+  dailyLimit: number;
+  carryOver: number;
+  todayBudgetLimit: number;
+  todayBudgetRemaining: number;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -55,6 +61,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [allowance, setAllowance] = useState<AllowanceSettings>({ amount: 1000, period: 'monthly' });
+  const [carryOver, setCarryOver] = useState<number>(0);
+  const lastSnapshotDateRef = useRef<string>('');
   
   const { isOnline } = useNetwork();
   const { isUnlocked } = useAuth();
@@ -114,7 +122,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         LocalDB.meta.getAllowanceSettings(),
       ]);
       setWallets(walletsData);
-      setTransactions(transactionsData);
+      // Retroactively enrich transactions that are missing category/wallet display fields
+      const enrichedTransactions = transactionsData.map(t => {
+        let enriched = { ...t };
+        if (t.category_id && !t.category_name) {
+          const cat = categoriesData.find(c => c.id === t.category_id);
+          if (cat) {
+            enriched = { ...enriched, category_name: cat.name, category_icon: cat.icon, category_color: cat.color };
+          }
+        }
+        if (t.wallet_id && !t.wallet_name) {
+          const wal = walletsData.find(w => w.id === t.wallet_id);
+          if (wal) {
+            enriched = { ...enriched, wallet_name: wal.name, wallet_type: wal.type };
+          }
+        }
+        return enriched;
+      });
+      setTransactions(enrichedTransactions);
       setCategories(categoriesData);
       setAlerts(alertsData);
       setLastSync(lastSyncData);
@@ -130,7 +155,64 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loadLocalData();
   }, [loadLocalData]);
 
-  // Background sync only when online and unlocked — never blocks the UI
+  // ===================== DAILY SNAPSHOT + CARRY-OVER =====================
+
+  /**
+   * Saves today's snapshot and computes carry-over from yesterday.
+   * Called after data is loaded and whenever the clock crosses midnight.
+   */
+  const processDailySnapshotAndCarryOver = useCallback(async (
+    txns: Transaction[],
+    currentAllowance: AllowanceSettings
+  ) => {
+    const yesterdayStr = format(subDays(new Date(), 1), 'yyyy-MM-dd');
+
+    // Compute daily limit
+    const periodDivisor =
+      currentAllowance.period === 'daily' ? 1
+      : currentAllowance.period === 'weekly' ? 7
+      : 30;
+    const limit = currentAllowance.amount / periodDivisor;
+
+    // Save yesterday's snapshot if not already saved
+    if (lastSnapshotDateRef.current !== yesterdayStr) {
+      const yesterdaySpent = txns
+        .filter(t => t.date === yesterdayStr)
+        .reduce((s, t) => s + Number(t.amount), 0);
+      const existingSnap = await LocalDB.dailySnapshots.get(yesterdayStr);
+      if (!existingSnap && yesterdaySpent > 0) {
+        await LocalDB.dailySnapshots.set({ date: yesterdayStr, spent: yesterdaySpent });
+      }
+      lastSnapshotDateRef.current = yesterdayStr;
+    }
+
+    // Compute carry-over: excess spending from yesterday
+    const yesterdaySnapshot = await LocalDB.dailySnapshots.get(yesterdayStr);
+    if (yesterdaySnapshot) {
+      const excess = yesterdaySnapshot.spent - limit;
+      setCarryOver(Math.max(0, excess));
+    } else {
+      setCarryOver(0);
+    }
+  }, []);
+
+  // Process carry-over when data loads
+  useEffect(() => {
+    if (!isLoading && transactions.length >= 0) {
+      processDailySnapshotAndCarryOver(transactions, allowance);
+    }
+  }, [isLoading, transactions, allowance, processDailySnapshotAndCarryOver]);
+
+  // Check for midnight day change every minute
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (lastSnapshotDateRef.current && lastSnapshotDateRef.current !== format(subDays(new Date(), 1), 'yyyy-MM-dd')) {
+        processDailySnapshotAndCarryOver(transactions, allowance);
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [transactions, allowance, processDailySnapshotAndCarryOver]);
+
   useEffect(() => {
     if (isOnline && isUnlocked && syncServiceRef.current) {
       syncServiceRef.current.sync().catch(() => {
@@ -167,8 +249,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // ===================== TRANSACTION CRUD (Fully Offline) =====================
 
   const addTransaction = useCallback(async (transactionData: Omit<Transaction, 'id' | 'created_at' | 'synced'>) => {
+    // Enrich with category display fields so they render correctly offline
+    let category_name: string | undefined;
+    let category_icon: string | undefined;
+    let category_color: string | undefined;
+
+    if (transactionData.category_id) {
+      const cat = await LocalDB.categories.get(transactionData.category_id);
+      if (cat) {
+        category_name = cat.name;
+        category_icon = cat.icon;
+        category_color = cat.color;
+      }
+    }
+
+    // Enrich with wallet display fields
+    let wallet_name: string | undefined;
+    let wallet_type: string | undefined;
+    const walletForEnrich = await LocalDB.wallets.get(transactionData.wallet_id);
+    if (walletForEnrich) {
+      wallet_name = walletForEnrich.name;
+      wallet_type = walletForEnrich.type;
+    }
+
     const newTransaction: Transaction = {
       ...transactionData,
+      category_name,
+      category_icon,
+      category_color,
+      wallet_name,
+      wallet_type,
       id: Date.now(),
       created_at: new Date().toISOString(),
       synced: false,
@@ -177,9 +287,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTransactions(prev => [newTransaction, ...prev]);
 
     // Update wallet balance immediately
-    const wallet = await LocalDB.wallets.get(transactionData.wallet_id);
-    if (wallet) {
-      const updatedWallet = { ...wallet, balance: wallet.balance - transactionData.amount };
+    if (walletForEnrich) {
+      const updatedWallet = { ...walletForEnrich, balance: walletForEnrich.balance - transactionData.amount };
       await LocalDB.wallets.set(updatedWallet);
       setWallets(prev => prev.map(w => w.id === updatedWallet.id ? updatedWallet : w));
     }
@@ -188,7 +297,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const updateTransaction = useCallback(async (id: number, updates: Partial<Transaction>) => {
     const transaction = await LocalDB.transactions.get(id);
     if (!transaction) return;
-    const updated = { ...transaction, ...updates, synced: false };
+
+    // Re-enrich category display fields if category changed
+    let categoryEnrichment: Partial<Transaction> = {};
+    const newCategoryId = updates.category_id ?? transaction.category_id;
+    if (newCategoryId) {
+      const cat = await LocalDB.categories.get(newCategoryId);
+      if (cat) {
+        categoryEnrichment = {
+          category_name: cat.name,
+          category_icon: cat.icon,
+          category_color: cat.color,
+        };
+      }
+    }
+
+    const updated = { ...transaction, ...updates, ...categoryEnrichment, synced: false };
     await LocalDB.transactions.set(updated);
     setTransactions(prev => prev.map(t => t.id === id ? updated : t));
   }, []);
@@ -300,6 +424,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ? totalSpentThisWeek
       : totalSpentThisMonth;
 
+  // Daily budget limit and carry-over adjusted remaining
+  const dailyLimit = allowance.amount / (
+    allowance.period === 'daily' ? 1
+    : allowance.period === 'weekly' ? 7
+    : 30
+  );
+  const todayBudgetLimit = Math.max(0, dailyLimit - carryOver);
+  const todayBudgetRemaining = Math.max(0, todayBudgetLimit - totalSpentToday);
+
+
   return (
     <AppContext.Provider value={{
       wallets,
@@ -326,6 +460,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       totalSpentThisWeek,
       totalSpentThisMonth,
       currentAllowanceSpent,
+      dailyLimit,
+      carryOver,
+      todayBudgetLimit,
+      todayBudgetRemaining,
     }}>
       {children}
     </AppContext.Provider>

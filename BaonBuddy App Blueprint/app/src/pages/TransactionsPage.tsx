@@ -201,7 +201,7 @@ export function TransactionsPage({ onNavigate }: TransactionsPageProps) {
                               -{formatCurrency(transaction.amount)}
                             </p>
                             
-                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                            <div className="flex gap-1 mt-1">
                               <Button
                                 variant="ghost"
                                 size="icon"
